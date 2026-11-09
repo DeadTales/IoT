@@ -1,0 +1,6 @@
+{
+    "SSID": "name_SSID",
+    "PASS": "Password",
+    "MQTT_HOST": "ip_add",
+    "MQTT_PORT": "broker's port"
+}
