@@ -1,1 +1,6 @@
-Modulo_A
+node_modules/
+dist/
+.env
+.env.local
+.vscode
+docs/
