@@ -18,6 +18,7 @@ constexpr unsigned long CSV_RETRY_INTERVAL_MS = 5000;
 constexpr size_t MIN_FREE_STORAGE_BYTES = 8192;
 constexpr unsigned int ADC_SAMPLE_COUNT = 32;
 constexpr unsigned int REFERENCE_SAMPLE_COUNT = 30;
+constexpr time_t EARLIEST_VALID_TIME = 1700000000;
 constexpr float MQ_SUPPLY_VOLTAGE = 5.0f;
 constexpr float MQ_REFERENCE_PPM = 450.0f;
 constexpr float MQ_CURVE_A = 110.47f;
@@ -53,7 +54,50 @@ String pendingRecordId;
 float referenceResistanceSum = 0;
 float referenceResistance = 0;
 unsigned referenceCount = 0;
-String gasSensorStatus = "Tomando referencia";
+String gasSensorStatus = "Preparando";
+
+namespace {
+constexpr int DISPLAY_MARGIN = 12;
+constexpr int FIRST_CARD_Y = 66;
+constexpr int CARD_GAP = 6;
+constexpr int FOOTER_HEIGHT = 28;
+constexpr int METRIC_LABEL_X = 62;
+constexpr int VALUE_WIDTH = 76;
+
+constexpr uint16_t rgb565(uint8_t red, uint8_t green, uint8_t blue) {
+    return ((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3);
+}
+
+constexpr uint16_t SCREEN_BG = rgb565(11, 19, 36);
+constexpr uint16_t CARD_BG = rgb565(20, 34, 56);
+constexpr uint16_t ICON_BG = rgb565(34, 52, 79);
+constexpr uint16_t SECONDARY_TEXT = rgb565(165, 188, 216);
+constexpr uint16_t MINT = rgb565(91, 231, 186);
+constexpr uint16_t ORANGE = rgb565(255, 184, 115);
+constexpr uint16_t BLUE = rgb565(120, 203, 255);
+constexpr uint16_t LAVENDER = rgb565(188, 171, 255);
+
+enum Metric { TEMPERATURE, HUMIDITY, GAS, METRIC_COUNT };
+
+struct MetricStyle {
+    const char *label;
+    const char *unit;
+    uint16_t color;
+};
+
+constexpr MetricStyle METRICS[METRIC_COUNT] = {
+    {"Temperatura", "C", ORANGE},
+    {"Humedad", "%RH", BLUE},
+    {"Gas MQ135", "ppm", LAVENDER},
+};
+
+int cardHeight();
+int cardCenter(int metric);
+void drawMetricIcon(int metric, int x, int y);
+void drawDisplay();
+void updateClock();
+void updateMqttStatus();
+} // namespace
 
 // Prototipos: todas las implementaciones estan debajo de loop().
 bool loadConfiguration();
@@ -62,6 +106,7 @@ void onMqttMessage(char *topic, byte *payload, unsigned int length);
 void sampleAndPublish();
 void updateDisplay(float temperature, float humidity, float gasPpm);
 float readGasPpm(float temperature, float humidity);
+bool getLocalReadingTime(time_t now, struct tm &localTime);
 String getCurrentTimestamp();
 String formatCsvNumber(float value);
 void buildMeasurementJson(JsonDocument &document, const String &timestamp, float temperature,
@@ -113,6 +158,8 @@ void setup() {
     mqttClient.setSocketTimeout(1);
     mqttClient.setCallback(onMqttMessage);
 
+    drawDisplay();
+    updateDisplay(NAN, NAN, NAN);
     isInitialized = true;
 }
 
@@ -131,6 +178,8 @@ void loop() {
     }
 
     publishPendingCsv();
+    updateClock();
+    updateMqttStatus();
     delay(2);
 }
 
@@ -188,15 +237,17 @@ void onMqttMessage(char *topic, byte *payload, unsigned int length) {
 }
 
 String getCurrentTimestamp() {
-    time_t now = time(nullptr);
-    if (now < 1700000000) {
+    struct tm localTime;
+    if (!getLocalReadingTime(time(nullptr), localTime)) {
         return "";
     }
-    struct tm localTime;
-    localtime_r(&now, &localTime);
     char buffer[40];
     strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S-06:00", &localTime);
     return String(buffer);
+}
+
+bool getLocalReadingTime(time_t now, struct tm &localTime) {
+    return now >= EARLIEST_VALID_TIME && localtime_r(&now, &localTime) != nullptr;
 }
 
 String formatCsvNumber(float value) {
@@ -246,31 +297,179 @@ void sampleAndPublish() {
 }
 
 void updateDisplay(float temperature, float humidity, float gasPpm) {
-    const String lines[] = {
-        "Temp: " + formatCsvNumber(temperature) + " C",
-        "Hum: " + formatCsvNumber(humidity) + " %RH",
-        "Gas: " + formatCsvNumber(gasPpm) + " ppm",
-        gasSensorStatus,
-        mqttClient.connected() ? "MQTT conectado" : "MQTT desconectado",
-    };
-    constexpr size_t LINE_COUNT = sizeof(lines) / sizeof(lines[0]);
-    static String previousLines[LINE_COUNT];
+    static String previousValues[METRIC_COUNT];
+    static String previousGasStatus;
+    const float readings[METRIC_COUNT] = {temperature, humidity, gasPpm};
+    const int valueRight = display.width() - DISPLAY_MARGIN - 50;
 
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.setTextDatum(TL_DATUM);
-    display.setTextPadding(display.width());
-    const int lineHeight = display.fontHeight();
-
-    for (size_t line = 0; line < LINE_COUNT; ++line) {
-        if (lines[line] == previousLines[line]) {
-            continue;
+    display.startWrite();
+    display.setTextColor(TFT_WHITE, CARD_BG);
+    display.setTextDatum(MR_DATUM);
+    display.setTextPadding(VALUE_WIDTH);
+    for (int metric = 0; metric < METRIC_COUNT; ++metric) {
+        const float reading = readings[metric];
+        String value = "--";
+        if (isfinite(reading)) {
+            if (metric == GAS && reading >= 99999.5f) {
+                char scientific[16];
+                snprintf(scientific, sizeof(scientific), "%.0e", static_cast<double>(reading));
+                value = scientific;
+            } else {
+                value = String(reading, metric == GAS ? 0 : 1);
+            }
         }
+        if (value != previousValues[metric]) {
+            display.drawString(value, valueRight, cardCenter(metric), 4);
+            previousValues[metric] = value;
+        }
+    }
 
-        // El fondo y el padding borran el texto anterior sin limpiar toda la pantalla.
-        display.drawString(lines[line], 0, line * lineHeight);
-        previousLines[line] = lines[line];
+    if (gasSensorStatus != previousGasStatus) {
+        display.setTextColor(SECONDARY_TEXT, CARD_BG);
+        display.setTextDatum(ML_DATUM);
+        display.setTextPadding(valueRight - VALUE_WIDTH - METRIC_LABEL_X);
+        display.drawString(gasSensorStatus, METRIC_LABEL_X, cardCenter(GAS) + 8, 2);
+        previousGasStatus = gasSensorStatus;
+    }
+    display.endWrite();
+}
+
+namespace {
+int cardHeight() {
+    return (display.height() - FIRST_CARD_Y - FOOTER_HEIGHT - 3 * CARD_GAP) / METRIC_COUNT;
+}
+
+int cardCenter(int metric) {
+    return FIRST_CARD_Y + metric * (cardHeight() + CARD_GAP) + cardHeight() / 2;
+}
+
+void drawMetricIcon(int metric, int x, int y) {
+    const uint16_t color = METRICS[metric].color;
+    display.fillCircle(x, y, 15, ICON_BG);
+    switch (metric) {
+    case TEMPERATURE:
+        display.fillRoundRect(x - 4, y - 11, 9, 19, 4, color);
+        display.fillCircle(x, y + 6, 7, color);
+        display.fillRoundRect(x - 2, y - 9, 5, 15, 2, ICON_BG);
+        display.fillCircle(x, y + 6, 5, ICON_BG);
+        display.drawFastVLine(x, y - 5, 11, color);
+        display.fillCircle(x, y + 6, 3, color);
+        break;
+    case HUMIDITY:
+        display.fillTriangle(x, y - 11, x - 7, y + 2, x + 7, y + 2, color);
+        display.fillCircle(x, y + 2, 7, color);
+        display.fillTriangle(x, y - 7, x - 5, y + 2, x + 5, y + 2, ICON_BG);
+        display.fillCircle(x, y + 2, 5, ICON_BG);
+        display.drawFastHLine(x - 2, y + 5, 3, color);
+        break;
+    case GAS:
+        display.drawFastHLine(x - 9, y - 5, 16, color);
+        display.drawFastHLine(x - 11, y, 22, color);
+        display.drawFastHLine(x - 7, y + 5, 14, color);
+        display.fillCircle(x + 7, y - 5, 2, color);
+        display.fillCircle(x + 10, y, 2, color);
+        display.fillCircle(x + 6, y + 5, 2, color);
+        break;
     }
 }
+
+void drawDisplay() {
+    const int panelWidth = display.width() - 2 * DISPLAY_MARGIN;
+    const int right = display.width() - DISPLAY_MARGIN;
+    const int clockX = right - 116;
+
+    display.startWrite();
+    display.fillScreen(SCREEN_BG);
+    display.setTextSize(1);
+    display.setTextPadding(0);
+    display.setTextDatum(TL_DATUM);
+    display.setTextColor(MINT, SCREEN_BG);
+    display.drawString("MONITOR DE AIRE", DISPLAY_MARGIN, 13, 2);
+    display.setTextColor(SECONDARY_TEXT, SCREEN_BG);
+    display.drawString(DEVICE_ID, DISPLAY_MARGIN, 32, 2);
+
+    display.drawCircle(clockX, 34, 10, MINT);
+    display.drawFastVLine(clockX, 28, 7, MINT);
+    display.drawLine(clockX, 34, clockX + 5, 37, MINT);
+    display.fillCircle(clockX, 34, 1, MINT);
+    display.drawFastHLine(DISPLAY_MARGIN, 56, panelWidth, ICON_BG);
+
+    for (int metric = 0; metric < METRIC_COUNT; ++metric) {
+        const int center = cardCenter(metric);
+        display.fillRoundRect(DISPLAY_MARGIN, center - cardHeight() / 2, panelWidth, cardHeight(),
+                              10, CARD_BG);
+        drawMetricIcon(metric, DISPLAY_MARGIN + 24, center);
+        display.setTextColor(TFT_WHITE, CARD_BG);
+        display.setTextDatum(ML_DATUM);
+        display.drawString(METRICS[metric].label, METRIC_LABEL_X, center - (metric == GAS ? 8 : 0),
+                           2);
+
+        const int unitRight = right - 12;
+        display.setTextColor(METRICS[metric].color, CARD_BG);
+        display.setTextDatum(MR_DATUM);
+        display.drawString(METRICS[metric].unit, unitRight, center, 2);
+        if (metric == TEMPERATURE) {
+            display.drawCircle(unitRight - display.textWidth("C", 2) - 3, center - 4, 2,
+                               METRICS[metric].color);
+        }
+    }
+
+    display.drawFastHLine(DISPLAY_MARGIN, display.height() - FOOTER_HEIGHT, panelWidth, ICON_BG);
+    display.endWrite();
+}
+
+void updateClock() {
+    static time_t displayedSecond = -1;
+    static bool wasSynced = false;
+    const time_t now = time(nullptr);
+    const time_t clockSecond = now >= EARLIEST_VALID_TIME ? now : 0;
+    if (clockSecond == displayedSecond) {
+        return;
+    }
+
+    struct tm localTime;
+    char clock[] = "--:--:--";
+    const bool synced = getLocalReadingTime(clockSecond, localTime);
+    if (synced) {
+        strftime(clock, sizeof(clock), "%H:%M:%S", &localTime);
+    }
+    const int right = display.width() - DISPLAY_MARGIN;
+
+    display.startWrite();
+    display.setTextDatum(TR_DATUM);
+    display.setTextPadding(102);
+    if (displayedSecond < 0 || synced != wasSynced) {
+        display.setTextColor(SECONDARY_TEXT, SCREEN_BG);
+        display.drawString(synced ? "HORA LOCAL" : "ESPERANDO NTP", right, 6, 2);
+        wasSynced = synced;
+    }
+    display.setTextColor(TFT_WHITE, SCREEN_BG);
+    display.drawString(clock, right, 23, 4);
+    display.endWrite();
+    displayedSecond = clockSecond;
+}
+
+void updateMqttStatus() {
+    static bool drawn = false;
+    static bool previousConnection = false;
+    if (drawn && wasMqttConnected == previousConnection) {
+        return;
+    }
+
+    const int center = display.height() - FOOTER_HEIGHT / 2;
+    const uint16_t color = wasMqttConnected ? MINT : ORANGE;
+    display.startWrite();
+    display.fillCircle(DISPLAY_MARGIN + 5, center, 4, color);
+    display.setTextColor(color, SCREEN_BG);
+    display.setTextDatum(ML_DATUM);
+    display.setTextPadding(display.width() - 2 * DISPLAY_MARGIN - 18);
+    display.drawString(wasMqttConnected ? "Broker MQTT conectado" : "Broker MQTT desconectado",
+                       DISPLAY_MARGIN + 18, center, 2);
+    display.endWrite();
+    previousConnection = wasMqttConnected;
+    drawn = true;
+}
+} // namespace
 
 float readGasPpm(float temperature, float humidity) {
     if (!isfinite(temperature) || !isfinite(humidity) || humidity < 0 || humidity > 100) {

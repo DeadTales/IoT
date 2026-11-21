@@ -3,6 +3,7 @@
 La prueba conserva los pines configurados en `include/TFT_Setup.h`, el bus SPI y su frecuencia.
 No utiliza WiFi, MQTT, DHT11, MQ135, LittleFS ni NVS. No modifica el CSV ni la configuracion guardada.
 El firmware normal sigue siendo el entorno predeterminado de PlatformIO.
+Ejecuta los comandos desde `ESP32/MonitorAire`.
 
 Para cargar solamente la prueba:
 
