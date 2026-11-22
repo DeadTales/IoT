@@ -5,6 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+LOCAL_TIME_ZONE = "America/Mexico_City"
+
 # Permite iniciar la aplicación desde cualquier directorio.
 load_dotenv(Path(__file__).with_name(".env"))
 

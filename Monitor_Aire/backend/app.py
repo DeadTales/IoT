@@ -14,11 +14,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, db
+from . import auth, csv_ingest, db
+from .config import LOCAL_TIME_ZONE
 from .mqtt_ingest import MqttIngest
 
 # Los filtros por fecha toman la zona local y PostgreSQL conserva los instantes.
-LOCAL_TIME = ZoneInfo("America/Mexico_City")
+LOCAL_TIME = ZoneInfo(LOCAL_TIME_ZONE)
 PERIODS = {
     "day": (timedelta(days=1), timedelta(minutes=15)),
     "week": (timedelta(days=7), timedelta(hours=4)),
@@ -99,6 +100,7 @@ async def lifespan(app: FastAPI):
 # Rutas de sesión y consultas de mediciones protegidas.
 api = APIRouter(prefix="/api")
 api.include_router(auth.router)
+api.include_router(csv_ingest.router)
 readings_api = APIRouter(dependencies=[Depends(auth.session_required)])
 
 

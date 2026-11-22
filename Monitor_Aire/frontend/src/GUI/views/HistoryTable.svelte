@@ -128,9 +128,9 @@
     <div class="table-empty">
       <strong>No hay registros disponibles</strong>
       <p>
-        {deviceId
+        {deviceId && (filters.start || filters.end)
           ? 'Prueba con otro intervalo de fechas.'
-          : 'Los registros aparecerán cuando un dispositivo envíe mediciones.'}
+          : 'Aquí aparecerán las lecturas con hora de medición.'}
       </p>
     </div>
   {:else}
@@ -138,7 +138,7 @@
       <table aria-label="Lecturas históricas del dispositivo">
         <thead>
           <tr>
-            <th scope="col">Fecha y hora</th>
+            <th scope="col">Fecha y hora de medición</th>
             {#each metrics as metric (metric.key)}
               <th scope="col" class="numeric">{metric.label} <span>({metric.unit})</span></th>
             {/each}
@@ -147,14 +147,14 @@
         </thead>
         <tbody>
           {#each response.rows as row (row.id)}
-            {@const timestamp = row.measured_at ?? row.received_at}
+            {@const timestamp = row.measured_at}
             <tr>
               <td class="table-time">
                 <time datetime={timestamp}>
                   <strong>{formatDate(timestamp)}</strong><span>
                     {formatDate(timestamp, 'time')}
                   </span>
-                </time>{#if !row.measured_at}<span class="table-received">Recepción</span>{/if}
+                </time>
               </td>
               {#each metrics as metric (metric.key)}
                 <td class="numeric">{formatValue(row[metric.key], metric)}</td>

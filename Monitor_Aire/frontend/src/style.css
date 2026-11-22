@@ -670,15 +670,8 @@ a {
   gap: 10px;
 }
 
-.table-time time span,
-.table-received {
+.table-time time span {
   color: var(--muted);
-}
-
-.table-received {
-  display: inline-block;
-  margin-left: 8px;
-  font-size: 0.75rem;
 }
 
 .table-pill {

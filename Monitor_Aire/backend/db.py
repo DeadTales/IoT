@@ -1,23 +1,26 @@
 """Inicialización y consultas de PostgreSQL para las lecturas del monitor."""
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from .config import database_url
+from .config import LOCAL_TIME_ZONE, database_url
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 READING_FIELDS = "id, measured_at, received_at, temperature, humidity, gas, calibrated"
 
-# La tabla y el CSV comparten los filtros de dispositivo y fecha.
+# La tabla y el CSV comparten el filtro por fecha de medición y el orden.
 HISTORY_FILTER = """
     FROM readings
     WHERE device_id = %(device)s
-      AND (%(start)s::timestamptz IS NULL OR event_at >= %(start)s)
-      AND (%(end)s::timestamptz IS NULL OR event_at < %(end)s)
+      AND measured_at IS NOT NULL
+      AND (%(start)s::timestamptz IS NULL OR measured_at >= %(start)s)
+      AND (%(end)s::timestamptz IS NULL OR measured_at < %(end)s)
 """
+HISTORY_ORDER = " ORDER BY measured_at DESC, received_at DESC, id DESC"
 
 
 def init_db(conn) -> None:
@@ -41,22 +44,35 @@ def open_pool() -> ConnectionPool:
     )
 
 
-def insert_reading(pool: ConnectionPool, reading: dict) -> bool:
-    """Registra el dispositivo y la lectura en la misma transacción."""
+INSERT_READING = """
+    INSERT INTO readings
+        (device_id, record_id, measured_at, temperature, humidity, gas, calibrated)
+    VALUES (%(device_id)s, %(record_id)s, %(measured_at)s, %(temperature)s,
+            %(humidity)s, %(gas)s, %(calibrated)s)
+    ON CONFLICT (device_id, record_id) DO NOTHING
+"""
+
+
+def insert_readings(pool: ConnectionPool, device_id: str, readings: Sequence[dict]) -> int:
+    """Registra un lote completo y devuelve las filas nuevas tras confirmar la transacción."""
+    if not readings:
+        return 0
+
     with pool.connection() as conn:
         conn.execute(
             "INSERT INTO devices (id) VALUES (%s) ON CONFLICT (id) DO NOTHING",
-            (reading["device_id"],),
+            (device_id,),
         )
-        result = conn.execute(
-            """INSERT INTO readings
-               (device_id, record_id, measured_at, temperature, humidity, gas, calibrated)
-               VALUES (%(device_id)s, %(record_id)s, %(measured_at)s, %(temperature)s,
-                       %(humidity)s, %(gas)s, %(calibrated)s)
-               ON CONFLICT (device_id, record_id) DO NOTHING""",
-            reading,
-        )
-        return result.rowcount == 1
+        with conn.cursor() as cursor:
+            cursor.executemany(INSERT_READING, readings)
+            inserted = cursor.rowcount
+
+    return inserted
+
+
+def insert_reading(pool: ConnectionPool, reading: dict) -> bool:
+    """Registra una lectura individual desde el cliente MQTT."""
+    return insert_readings(pool, reading["device_id"], [reading]) == 1
 
 
 def latest_by_device(pool: ConnectionPool) -> dict:
@@ -90,24 +106,29 @@ def get_history(pool: ConnectionPool, filters: dict, page: int, per_page: int) -
         rows = conn.execute(
             f"SELECT device_id, {READING_FIELDS} "
             + HISTORY_FILTER
-            + " ORDER BY event_at DESC, id DESC LIMIT %(limit)s OFFSET %(offset)s",
+            + HISTORY_ORDER
+            + " LIMIT %(limit)s OFFSET %(offset)s",
             params,
         ).fetchall()
     return {"rows": rows, "total": total, "page": page, "per_page": per_page}
 
 
 def export_history(pool: ConnectionPool, filters: dict):
-    """Envía los registros en bloques CSV de PostgreSQL."""
+    """Envía el CSV por bloques en la zona horaria del panel."""
     # El apóstrofo protege los identificadores que una hoja de cálculo leería como fórmulas.
-    query = """
+    query = (
+        """
         SELECT CASE WHEN ltrim(device_id) ~ '^[=+@＝＋－＠-]'
                     THEN chr(39) || device_id ELSE device_id END AS device_id,
                measured_at, received_at, temperature AS temperature_c,
                humidity AS humidity_rh, gas AS gas_ppm, calibrated
-    """ + HISTORY_FILTER + " ORDER BY event_at DESC, id DESC"
+        """
+        + HISTORY_FILTER
+        + HISTORY_ORDER
+    )
 
     with pool.connection() as conn, conn.cursor() as cursor:
-        cursor.execute("SET LOCAL TIME ZONE 'UTC'")
+        cursor.execute("SELECT set_config('TimeZone', %s, true)", (LOCAL_TIME_ZONE,))
         with cursor.copy(
             f"COPY ({query}) TO STDOUT WITH (FORMAT CSV, HEADER TRUE)",
             filters,

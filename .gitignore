@@ -12,6 +12,7 @@ docs/
 # Compilación y configuración del ESP32.
 /Monitor_Aire/ESP32/**/.pio
 /Monitor_Aire/ESP32/**/config.json
+/Monitor_Aire/ESP32/include/csv_upload_local.h
 /Monitor_Aire/ESP32/**/c_cucei.json
 /Monitor_Aire/ESP32/**/.code-workspace
 

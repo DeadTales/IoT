@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS readings (
     record_id text,
     measured_at timestamptz,
     received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    -- El historial usa la hora de recepción si el sensor carecía de hora de medición.
+    -- La lectura en vivo puede usar la hora de recepción si falta la hora de medición.
     event_at timestamptz GENERATED ALWAYS AS (coalesce(measured_at, received_at)) STORED,
     temperature double precision,
     humidity double precision,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS readings (
     UNIQUE (device_id, record_id)
 );
 
--- El historial y las gráficas consultan columnas de tiempo distintas.
+-- La vista en vivo usa event_at. El historial y las gráficas usan measured_at.
 CREATE INDEX IF NOT EXISTS dashboard_readings_device_event_idx
     ON readings (device_id, event_at DESC, id DESC);
 

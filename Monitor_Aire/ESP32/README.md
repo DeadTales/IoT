@@ -4,8 +4,10 @@ Consulta la [documentación por servicio](../docs/README.md) y el [recorrido del
 
 Cada 2 segundos publica el JSON en `dispositivo/ESP32_S3_0001/tratado`.
 Si MQTT esta desconectado o falla publish, agrega las lecturas a un unico archivo
-en LittleFS (`/pending.csv`). Al reconectar publica una fila por mensaje en
-`dispositivo/ESP32_S3_0001/crudo`. Python escucha `dispositivo/+/crudo`,
+en LittleFS (`/pending.csv`). Con [el reenvío HTTP activado](#reenviar-el-historial-por-http),
+manda las filas pendientes en lotes a FastAPI. Por defecto, al reconectar
+publica una fila por mensaje en `dispositivo/ESP32_S3_0001/crudo`.
+Python escucha `dispositivo/+/crudo`,
 convierte al mismo JSON y publica en `dispositivo/<ID>/tratado` con QoS 1.
 Tras la confirmacion del broker, Python publica el ID del registro en
 `dispositivo/<ID>/ack`. El ESP32 guarda el avance confirmado en NVS para
@@ -29,10 +31,11 @@ El comodin `+` se utiliza al suscribirse, nunca al publicar.
    En ESP32, localhost apuntaria al propio ESP32.
 2. Configura tu broker para aceptar conexiones anonimas desde la LAN.
    El firmware y Python se conectan sin usuario ni contrasena MQTT, mediante TCP sin TLS.
-   Desde `ESP32`, puedes iniciarlo con `mosquitto -c backend/scripts/mosquitto.conf`.
-3. Ejecuta `pio run -t uploadfs` para cargar config.json y `pio run -t upload`
-   para cargar firmware. Subir LittleFS de nuevo reemplaza los CSV existentes.
-4. Para ejecutar el conversor independiente, desde `ESP32` en la computadora del broker:
+   Desde `Monitor_Aire`, puedes iniciarlo con `mosquitto -c backend/scripts/mosquitto.conf`.
+3. Desde `Monitor_Aire/ESP32`, ejecuta `pio run -t uploadfs` para cargar
+   `config.json` y `pio run -t upload` para cargar el firmware. Subir LittleFS
+   de nuevo reemplaza los CSV existentes.
+4. Para ejecutar el conversor independiente, desde `Monitor_Aire` en la computadora del broker:
 
 ```bash
 python3 -m venv backend/.venv
@@ -61,7 +64,7 @@ propietario sea ese rol. El backend aplica `backend/schema.sql` al iniciar.
 Si la base solo tiene las tablas de la versión anterior (`dashboard_*`), el
 backend las renombra y conserva sus datos.
 
-Desde la raíz `ESP32`, donde están `backend` y `frontend`:
+Desde la raíz de `Monitor_Aire`, donde están `backend` y `frontend`:
 
 ```bash
 python3 -m venv backend/.venv
@@ -85,14 +88,14 @@ La sesión usa un JWT con caducidad en una cookie `HttpOnly`.
 
 ### Compilar y abrir
 
-Desde `ESP32/frontend`:
+Desde `Monitor_Aire/frontend`:
 
 ```bash
 npm ci
 npm run build
 ```
 
-Desde la raíz `ESP32`:
+Desde la raíz de `Monitor_Aire`:
 
 ```bash
 backend/.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
@@ -111,12 +114,67 @@ del backend por cliente MQTT.
   Detén el conversor standalone al usar este modo. Si decides mantenerlo,
   configura `MQTT_CONVERT_RAW=false` para que el backend consuma sus JSON
   tratados. Esos JSON no llevan identificador para eliminar duplicados.
-- Las gráficas usan la fecha de medición del ESP32. Las filas sin hora NTP se
-  guardan en el historial con la fecha de recepción y quedan fuera de las
-  gráficas. El CSV se genera en el backend con las fechas en UTC.
+- Las gráficas, el historial y el CSV requieren la hora de medición del
+  ESP32. PostgreSQL conserva las filas sin ella para registrar su recepción.
+  El historial y el CSV muestran primero las mediciones más recientes y
+  desempatan por hora de recepción. El CSV expresa ambas fechas en la hora
+  de Ciudad de México, igual que el panel.
 - El dashboard registra desde que el backend empieza a recibir mensajes.
   Las publicaciones en vivo conservan el QoS 0 del firmware. Para conservar
   esas mediciones, mantén activos el broker, el backend y PostgreSQL.
+
+### Reenviar el historial por HTTP
+
+El ESP32 manda hasta **50 lecturas y 8 KiB** de `pending.csv` por
+`POST /api/ingest/{device_id}/csv`. El límite de bytes incluye la cabecera.
+El ESP32 prepara un solo lote en RAM y realiza una petición a la vez. FastAPI
+valida todas las filas, guarda el lote en PostgreSQL en una transacción y
+responde con `204` y `X-CSV-Records` con el total confirmado. El ESP32
+entonces actualiza el avance guardado en NVS. Si la petición falla, conserva
+el lote y reintenta a partir de los cinco segundos. PostgreSQL reconoce las
+filas repetidas por dispositivo e identificador de registro. Las lecturas en
+vivo siguen por MQTT cada dos segundos.
+
+```mermaid
+sequenceDiagram
+    participant ESP as ESP32 / LittleFS
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    ESP->>API: POST con hasta 50 filas y 8 KiB
+    API->>DB: Guardar el lote en una transacción
+    DB-->>API: Transacción confirmada
+    API-->>ESP: 204 y X-CSV-Records
+    ESP->>ESP: Guardar en NVS el avance confirmado
+```
+
+1. Genera una clave con `python3 -c 'import secrets; print(secrets.token_urlsafe(24))'`.
+   Guárdala como `CSV_UPLOAD_TOKEN` en `backend/.env`.
+2. Inicia el backend en una interfaz a la que pueda llegar el ESP32 desde
+   la red local. Desde `Monitor_Aire`, puedes usar:
+
+   ```bash
+   backend/.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
+   ```
+
+3. Desde `Monitor_Aire/ESP32`, crea `include/csv_upload_local.h` con estas
+   dos constantes. Usa la IP LAN de la computadora y el mismo token del
+   backend. Git ignora este archivo local.
+
+   ```cpp
+   #pragma once
+
+   #define CSV_UPLOAD_BUILD_URL "http://192.168.1.50:8000"
+   #define CSV_UPLOAD_BUILD_TOKEN "TOKEN_DEL_BACKEND"
+   ```
+
+4. Ejecuta `pio run -t upload` desde `Monitor_Aire/ESP32`. Para preservar
+   las lecturas pendientes, sube únicamente el firmware. Subir LittleFS
+   con `uploadfs` reemplaza su contenido, incluido `pending.csv`.
+
+Si estás preparando por primera vez el sistema de archivos de una placa,
+también puedes configurar `CSV_UPLOAD_URL` y `CSV_UPLOAD_TOKEN` en
+`data/config.json`. Cuando el JSON tiene ambas claves completas, sus valores
+tienen prioridad sobre los del encabezado local.
 
 ## Pines
 

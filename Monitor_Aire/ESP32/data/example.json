@@ -2,5 +2,7 @@
   "SSID": "name_SSID",
   "PASS": "Password",
   "MQTT_HOST": "ip_add",
-  "MQTT_PORT": "broker's port"
+  "MQTT_PORT": "broker's port",
+  "CSV_UPLOAD_URL": "",
+  "CSV_UPLOAD_TOKEN": ""
 }

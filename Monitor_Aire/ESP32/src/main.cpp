@@ -1,3 +1,5 @@
+#include "csv_http_upload.h"
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
@@ -6,8 +8,13 @@
 #include <PubSubClient.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
+#include <cstring>
 #include <math.h>
 #include <time.h>
+
+#if __has_include("csv_upload_local.h")
+#include "csv_upload_local.h"
+#endif
 
 // Pines de los sensores en la placa ESP32-S3.
 constexpr uint8_t PIN_DHT = 4;
@@ -40,6 +47,7 @@ WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 JsonDocument configuration;
 Preferences queuePreferences;
+CsvHttpUpload csvHttpUpload;
 
 // Temas MQTT del dispositivo para lecturas, estado y confirmaciones.
 const String deviceTopicPrefix = String("dispositivo/") + DEVICE_ID;
@@ -112,6 +120,7 @@ void updateMqttStatus();
 
 // Configuración y transporte. Las implementaciones siguen al ciclo de Arduino.
 bool loadConfiguration();
+void configureCsvHttpUpload();
 void maintainMqttConnection();
 void onMqttMessage(char *topic, byte *payload, unsigned int length);
 
@@ -128,6 +137,7 @@ void updateDisplay(float temperature, float humidity, float gasPpm);
 String formatCsvNumber(float value);
 void saveMeasurementCsv(const String &timestamp, float temperature, float humidity, float gasPpm);
 void publishPendingCsv();
+bool commitPendingCsvOffset();
 
 // Arranque de Arduino y recuperación de la posición confirmada de la cola.
 void setup() {
@@ -154,6 +164,7 @@ void setup() {
     if (!loadConfiguration()) {
         return;
     }
+    configureCsvHttpUpload();
 
     if (!queuePreferences.begin("csv-queue", false)) {
         Serial.println("ERROR: no se pudo abrir el estado del CSV");
@@ -214,6 +225,21 @@ bool loadConfiguration() {
     return true;
 }
 
+void configureCsvHttpUpload() {
+    const char *url = configuration["CSV_UPLOAD_URL"] | "";
+    const char *token = configuration["CSV_UPLOAD_TOKEN"] | "";
+
+    // El encabezado local permite actualizar solo el firmware y conservar LittleFS.
+#if defined(CSV_UPLOAD_BUILD_URL) && defined(CSV_UPLOAD_BUILD_TOKEN)
+    if (*url == '\0' || *token == '\0') {
+        url = CSV_UPLOAD_BUILD_URL;
+        token = CSV_UPLOAD_BUILD_TOKEN;
+    }
+#endif
+
+    csvHttpUpload.configure(url, token, DEVICE_ID);
+}
+
 void maintainMqttConnection() {
     const bool connected = mqttClient.connected();
     if (wasMqttConnected && !connected) {
@@ -229,7 +255,7 @@ void maintainMqttConnection() {
         return;
     }
     if (mqttClient.connect(DEVICE_ID, statusTopic.c_str(), 1, true, "desconectado")) {
-        if (!mqttClient.subscribe(acknowledgmentTopic.c_str(), 1)) {
+        if (!csvHttpUpload.enabled() && !mqttClient.subscribe(acknowledgmentTopic.c_str(), 1)) {
             mqttClient.disconnect();
             return;
         }
@@ -240,7 +266,8 @@ void maintainMqttConnection() {
 }
 
 void onMqttMessage(char *topic, byte *payload, unsigned int length) {
-    if (String(topic) != acknowledgmentTopic || pendingRecordId.isEmpty()) {
+    if (csvHttpUpload.enabled() || String(topic) != acknowledgmentTopic ||
+        pendingRecordId.isEmpty()) {
         return;
     }
     String recordId;
@@ -248,9 +275,7 @@ void onMqttMessage(char *topic, byte *payload, unsigned int length) {
         recordId += char(payload[i]);
     }
     // Tras el ACK, el cursor persistido permite continuar el envío después de un reinicio.
-    if (recordId == pendingRecordId &&
-        queuePreferences.putULong("offset", pendingCsvEndOffset) == sizeof(uint32_t)) {
-        confirmedCsvOffset = pendingCsvEndOffset;
+    if (recordId == pendingRecordId && commitPendingCsvOffset()) {
         pendingRecordId = "";
     }
 }
@@ -579,8 +604,25 @@ void saveMeasurementCsv(const String &timestamp, float temperature, float humidi
     file.close();
 }
 
+bool commitPendingCsvOffset() {
+    if (queuePreferences.putULong("offset", pendingCsvEndOffset) != sizeof(uint32_t)) {
+        return false;
+    }
+    confirmedCsvOffset = pendingCsvEndOffset;
+    return true;
+}
+
 void publishPendingCsv() {
-    if (!mqttClient.connected() || millis() - lastReplayAt < CSV_RETRY_INTERVAL_MS) {
+    const bool useHttp = csvHttpUpload.enabled();
+
+    // El ciclo aplica el ACK; la tarea HTTP nunca accede a LittleFS ni a NVS.
+    if (useHttp && csvHttpUpload.takeConfirmation() && !commitPendingCsvOffset()) {
+        Serial.println("CSV HTTP: no se pudo guardar el avance; se reintentara el lote");
+    }
+
+    const bool transportReady =
+        useHttp ? WiFi.status() == WL_CONNECTED && csvHttpUpload.ready() : mqttClient.connected();
+    if (!transportReady || millis() - lastReplayAt < CSV_RETRY_INTERVAL_MS) {
         return;
     }
     lastReplayAt = millis();
@@ -602,9 +644,26 @@ void publishPendingCsv() {
     }
 
     if (confirmedCsvOffset == 0) {
-        file.readStringUntil('\n'); // La primera fila del archivo es la cabecera.
+        if (useHttp) {
+            uint8_t header[sizeof(CSV_HEADER) - 1];
+            if (file.read(header, sizeof(header)) != sizeof(header) ||
+                std::memcmp(header, CSV_HEADER, sizeof(header)) != 0) {
+                Serial.println("CSV HTTP: cabecera incompleta o invalida; archivo conservado");
+                return;
+            }
+        } else {
+            file.readStringUntil('\n'); // La primera fila del archivo es la cabecera.
+        }
     } else if (!file.seek(confirmedCsvOffset)) {
         Serial.println("ERROR: no se pudo leer la posicion del CSV");
+        return;
+    }
+
+    if (useHttp) {
+        pendingCsvEndOffset = csvHttpUpload.submit(file, CSV_HEADER);
+        if (pendingCsvEndOffset == 0) {
+            Serial.println("CSV HTTP: sin filas completas en el lote; archivo conservado");
+        }
         return;
     }
 
