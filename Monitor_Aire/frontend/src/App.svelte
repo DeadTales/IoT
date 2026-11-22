@@ -4,11 +4,13 @@
   import Dashboard from './GUI/views/Dashboard.svelte';
   import Login from './GUI/views/Login.svelte';
 
+  // La sesión determina si se muestra el acceso o el panel.
   let user = $state(null);
   let checking = $state(true);
   let busy = $state(false);
   let authError = $state('');
 
+  // Comprueba la cookie antes de mostrar el formulario.
   onMount(async () => {
     try {
       user = await api('/auth/me');
@@ -19,15 +21,17 @@
     }
   });
 
+  // La API valida las credenciales y administra la cookie de sesión.
   async function login(username, password) {
     busy = true;
     authError = '';
     try {
       user = await postJson('/auth/login', { username, password });
     } catch (error) {
-      authError = error.status === 401 || error.status === 422
-        ? 'Revisa el usuario y la contraseña.'
-        : 'No se pudo iniciar sesión. Intenta nuevamente.';
+      authError =
+        error.status === 401 || error.status === 422
+          ? 'Revisa el usuario y la contraseña.'
+          : 'No se pudo iniciar sesión. Intenta nuevamente.';
     } finally {
       busy = false;
     }
@@ -46,6 +50,7 @@
     }
   }
 
+  // Las vistas autenticadas notifican aquí una sesión vencida.
   function expireSession() {
     user = null;
     authError = 'Tu sesión venció. Inicia sesión nuevamente.';

@@ -1,1 +1,1 @@
-"""API y almacenamiento del monitor de aire."""
+"""Servicios de API, autenticación y almacenamiento del monitor de aire."""

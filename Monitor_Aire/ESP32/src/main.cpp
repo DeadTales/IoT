@@ -9,25 +9,31 @@
 #include <math.h>
 #include <time.h>
 
-// Hardware y tiempos de operacion.
+// Pines de los sensores en la placa ESP32-S3.
 constexpr uint8_t PIN_DHT = 4;
 constexpr uint8_t PIN_MQ135 = 5;
+
+// Intervalos de trabajo y umbral para aceptar una fecha sincronizada por NTP.
 constexpr unsigned long SAMPLE_INTERVAL_MS = 2000;
 constexpr unsigned long CONNECTION_RETRY_INTERVAL_MS = 5000;
 constexpr unsigned long CSV_RETRY_INTERVAL_MS = 5000;
-constexpr size_t MIN_FREE_STORAGE_BYTES = 8192;
+constexpr time_t EARLIEST_VALID_TIME = 1700000000;
+
+// Parámetros de muestreo y referencia del MQ135.
 constexpr unsigned int ADC_SAMPLE_COUNT = 32;
 constexpr unsigned int REFERENCE_SAMPLE_COUNT = 30;
-constexpr time_t EARLIEST_VALID_TIME = 1700000000;
 constexpr float MQ_SUPPLY_VOLTAGE = 5.0f;
 constexpr float MQ_REFERENCE_PPM = 450.0f;
 constexpr float MQ_CURVE_A = 110.47f;
 constexpr float MQ_CURVE_B = -2.862f;
+
+// Identidad del dispositivo y formato del respaldo en LittleFS.
+constexpr size_t MIN_FREE_STORAGE_BYTES = 8192;
 constexpr char DEVICE_ID[] = "ESP32_S3_0001";
 constexpr char CSV_PATH[] = "/pending.csv";
 constexpr char CSV_HEADER[] = "id,device_id,timestamp,temperature,humidity,gas,calibrate\n";
 
-// Perifericos y configuracion.
+// Periféricos, cliente MQTT y configuración guardada.
 TFT_eSPI display;
 DHT dhtSensor(PIN_DHT, DHT11);
 WiFiClient wifiClient;
@@ -35,27 +41,32 @@ PubSubClient mqttClient(wifiClient);
 JsonDocument configuration;
 Preferences queuePreferences;
 
-// Topics especificos de este dispositivo.
+// Temas MQTT del dispositivo para lecturas, estado y confirmaciones.
 const String deviceTopicPrefix = String("dispositivo/") + DEVICE_ID;
 const String rawTopic = deviceTopicPrefix + "/crudo";
 const String processedTopic = deviceTopicPrefix + "/tratado";
 const String acknowledgmentTopic = deviceTopicPrefix + "/ack";
 const String statusTopic = deviceTopicPrefix + "/estado";
 
-// Estado de conexion, reenvio y referencia del sensor.
+// Estado del ciclo principal y plazos de reconexión y muestreo.
 bool isInitialized = false;
 bool wasMqttConnected = false;
 unsigned long lastSampleAt = 0;
 unsigned long lastConnectionAttemptAt = 0;
 unsigned long lastReplayAt = 0;
+
+// La cola distingue el desplazamiento confirmado del último registro enviado.
 size_t confirmedCsvOffset = 0;
 size_t pendingCsvEndOffset = 0;
 String pendingRecordId;
+
+// Referencia del MQ135 acumulada durante las primeras muestras válidas.
 float referenceResistanceSum = 0;
 float referenceResistance = 0;
 unsigned referenceCount = 0;
 String gasSensorStatus = "Preparando";
 
+// Geometría, colores y estilos de las tarjetas de la pantalla TFT.
 namespace {
 constexpr int DISPLAY_MARGIN = 12;
 constexpr int FIRST_CARD_Y = 66;
@@ -99,21 +110,26 @@ void updateClock();
 void updateMqttStatus();
 } // namespace
 
-// Prototipos: todas las implementaciones estan debajo de loop().
+// Configuración y transporte. Las implementaciones siguen al ciclo de Arduino.
 bool loadConfiguration();
 void maintainMqttConnection();
 void onMqttMessage(char *topic, byte *payload, unsigned int length);
-void sampleAndPublish();
-void updateDisplay(float temperature, float humidity, float gasPpm);
-float readGasPpm(float temperature, float humidity);
+
+// Fecha de la lectura, adquisición y representación de los datos.
 bool getLocalReadingTime(time_t now, struct tm &localTime);
 String getCurrentTimestamp();
-String formatCsvNumber(float value);
+float readGasPpm(float temperature, float humidity);
 void buildMeasurementJson(JsonDocument &document, const String &timestamp, float temperature,
                           float humidity, float gasPpm);
+void sampleAndPublish();
+void updateDisplay(float temperature, float humidity, float gasPpm);
+
+// Respaldo CSV y recuperación al restablecer la conexión.
+String formatCsvNumber(float value);
 void saveMeasurementCsv(const String &timestamp, float temperature, float humidity, float gasPpm);
 void publishPendingCsv();
 
+// Arranque de Arduino y recuperación de la posición confirmada de la cola.
 void setup() {
     Serial.begin(115200);
 
@@ -128,7 +144,7 @@ void setup() {
     display.setTextSize(2);
     display.println("Iniciando...");
 
-    // No formatear automaticamente: conserva los registros ante errores.
+    // El montaje sin formateo conserva las lecturas pendientes si falla LittleFS.
     if (!LittleFS.begin(false)) {
         Serial.println("ERROR: no se pudo montar LittleFS");
         display.setTextColor(TFT_RED, TFT_BLACK);
@@ -144,6 +160,7 @@ void setup() {
         return;
     }
     confirmedCsvOffset = queuePreferences.getULong("offset", 0);
+
     dhtSensor.begin();
     analogReadResolution(12);
     analogSetPinAttenuation(PIN_MQ135, ADC_11db);
@@ -163,6 +180,7 @@ void setup() {
     isInitialized = true;
 }
 
+// El ciclo atiende MQTT y la pantalla entre cada toma de muestras.
 void loop() {
     if (!isInitialized) {
         delay(10);
@@ -183,6 +201,7 @@ void loop() {
     delay(2);
 }
 
+// Configuración almacenada en flash y manejo de la conexión MQTT.
 bool loadConfiguration() {
     File file = LittleFS.open("/config.json", "r");
     if (!file || deserializeJson(configuration, file) ||
@@ -228,7 +247,7 @@ void onMqttMessage(char *topic, byte *payload, unsigned int length) {
     for (unsigned int i = 0; i < length; ++i) {
         recordId += char(payload[i]);
     }
-    // Persistir el avance solo tras la confirmacion del conversor.
+    // Tras el ACK, el cursor persistido permite continuar el envío después de un reinicio.
     if (recordId == pendingRecordId &&
         queuePreferences.putULong("offset", pendingCsvEndOffset) == sizeof(uint32_t)) {
         confirmedCsvOffset = pendingCsvEndOffset;
@@ -236,6 +255,7 @@ void onMqttMessage(char *topic, byte *payload, unsigned int length) {
     }
 }
 
+// El timestamp queda vacío hasta que el reloj tiene una fecha válida.
 String getCurrentTimestamp() {
     struct tm localTime;
     if (!getLocalReadingTime(time(nullptr), localTime)) {
@@ -250,10 +270,7 @@ bool getLocalReadingTime(time_t now, struct tm &localTime) {
     return now >= EARLIEST_VALID_TIME && localtime_r(&now, &localTime) != nullptr;
 }
 
-String formatCsvNumber(float value) {
-    return isfinite(value) ? String(value, 2) : "";
-}
-
+// Contrato de telemetría seguido por el consumidor MQTT.
 void buildMeasurementJson(JsonDocument &document, const String &timestamp, float temperature,
                           float humidity, float gasPpm) {
     document["device_id"] = DEVICE_ID;
@@ -263,18 +280,19 @@ void buildMeasurementJson(JsonDocument &document, const String &timestamp, float
         document["timestamp"] = timestamp;
     }
     JsonObject measurements = document["measurements"].to<JsonObject>();
-    const char *names[] = {"temperature", "humidity", "gas"};
-    const char *units[] = {"°C", "%RH", "ppm"};
-    float values[] = {temperature, humidity, gasPpm};
-    for (int i = 0; i < 3; ++i) {
-        JsonObject measurement = measurements[names[i]].to<JsonObject>();
-        measurement["sensor"] = i == 2 ? "MQ135" : "DHT11";
-        if (isfinite(values[i])) {
-            measurement["value"] = values[i];
+    constexpr const char *names[METRIC_COUNT] = {"temperature", "humidity", "gas"};
+    constexpr const char *units[METRIC_COUNT] = {"°C", "%RH", "ppm"};
+    const float values[METRIC_COUNT] = {temperature, humidity, gasPpm};
+
+    for (int metric = 0; metric < METRIC_COUNT; ++metric) {
+        JsonObject measurement = measurements[names[metric]].to<JsonObject>();
+        measurement["sensor"] = metric == GAS ? "MQ135" : "DHT11";
+        if (isfinite(values[metric])) {
+            measurement["value"] = values[metric];
         } else {
             measurement["value"] = nullptr;
         }
-        measurement["unit"] = units[i];
+        measurement["unit"] = units[metric];
     }
     measurements["gas"]["calibrate"] = false;
 }
@@ -289,6 +307,8 @@ void sampleAndPublish() {
     buildMeasurementJson(document, timestamp, temperature, humidity, gasPpm);
     String json;
     serializeJson(document, json);
+
+    // El respaldo local conserva la muestra cuando MQTT no puede enviarla.
     if (!mqttClient.connected() || !mqttClient.publish(processedTopic.c_str(), json.c_str())) {
         saveMeasurementCsv(timestamp, temperature, humidity, gasPpm);
     }
@@ -296,6 +316,7 @@ void sampleAndPublish() {
     updateDisplay(temperature, humidity, gasPpm);
 }
 
+// Actualización de las lecturas sin volver a dibujar las tarjetas completas.
 void updateDisplay(float temperature, float humidity, float gasPpm) {
     static String previousValues[METRIC_COUNT];
     static String previousGasStatus;
@@ -335,6 +356,7 @@ void updateDisplay(float temperature, float humidity, float gasPpm) {
 }
 
 namespace {
+// Dibujo de las tarjetas, el reloj y el pie de estado MQTT.
 int cardHeight() {
     return (display.height() - FIRST_CARD_Y - FOOTER_HEIGHT - 3 * CARD_GAP) / METRIC_COUNT;
 }
@@ -471,10 +493,13 @@ void updateMqttStatus() {
 }
 } // namespace
 
+// Compensación ambiental y estimación de gas a partir del voltaje del MQ135.
 float readGasPpm(float temperature, float humidity) {
     if (!isfinite(temperature) || !isfinite(humidity) || humidity < 0 || humidity > 100) {
         return NAN;
     }
+
+    // Promedia muestras del ADC y convierte el valor de milivoltios a voltios.
     float adcVoltage = 0;
     for (int i = 0; i < ADC_SAMPLE_COUNT; ++i) {
         adcVoltage += analogReadMilliVolts(PIN_MQ135);
@@ -497,7 +522,8 @@ float readGasPpm(float temperature, float humidity) {
         environmentalCorrection <= 0) {
         return NAN;
     }
-    // Estimar R0 a partir de 30 muestras y una referencia supuesta de 450 ppm.
+
+    // Estima R0 con 30 muestras y una referencia supuesta de 450 ppm.
     if (referenceCount < REFERENCE_SAMPLE_COUNT) {
         referenceResistanceSum += correctedResistance;
         ++referenceCount;
@@ -512,6 +538,11 @@ float readGasPpm(float temperature, float humidity) {
     const float ppm = MQ_CURVE_A * powf(correctedResistance / referenceResistance, MQ_CURVE_B);
     gasSensorStatus = "PPM estimadas";
     return isfinite(ppm) && ppm > 0 ? ppm : NAN;
+}
+
+// Respaldo CSV y reenvío de registros hasta recibir su ACK.
+String formatCsvNumber(float value) {
+    return isfinite(value) ? String(value, 2) : "";
 }
 
 void saveMeasurementCsv(const String &timestamp, float temperature, float humidity, float gasPpm) {
@@ -530,8 +561,8 @@ void saveMeasurementCsv(const String &timestamp, float temperature, float humidi
     }
 
     char recordId[24];
-    snprintf(recordId, sizeof(recordId), "%08lx%08lx", (unsigned long)esp_random(),
-             (unsigned long)esp_random());
+    snprintf(recordId, sizeof(recordId), "%08lx%08lx", static_cast<unsigned long>(esp_random()),
+             static_cast<unsigned long>(esp_random()));
     const String row = String(recordId) + "," + DEVICE_ID + "," + timestamp + "," +
                        formatCsvNumber(temperature) + "," + formatCsvNumber(humidity) + "," +
                        formatCsvNumber(gasPpm) + ",false\n";
@@ -559,7 +590,7 @@ void publishPendingCsv() {
         return;
     }
 
-    // El archivo se borra al confirmar todas sus filas; no se reescribe por cada ACK.
+    // Al confirmar todas las filas, el archivo completo puede borrarse.
     if (confirmedCsvOffset >= file.size()) {
         file.close();
         if (LittleFS.remove(CSV_PATH)) {
@@ -571,7 +602,7 @@ void publishPendingCsv() {
     }
 
     if (confirmedCsvOffset == 0) {
-        file.readStringUntil('\n'); // Omitir la cabecera una sola vez.
+        file.readStringUntil('\n'); // La primera fila del archivo es la cabecera.
     } else if (!file.seek(confirmedCsvOffset)) {
         Serial.println("ERROR: no se pudo leer la posicion del CSV");
         return;

@@ -16,7 +16,9 @@ def main() -> None:
     args = parser.parse_args()
     username = args.username.lower()
     if not USERNAME.fullmatch(username):
-        parser.error("Usa de 3 a 64 caracteres: letras a-z, números, puntos, guiones o guiones bajos")
+        parser.error(
+            "Usa de 3 a 64 caracteres: letras a-z, números, puntos, guiones o guiones bajos"
+        )
 
     password = getpass("Contraseña: ")
     if not 12 <= len(password) <= 256:
@@ -24,12 +26,14 @@ def main() -> None:
     if password != getpass("Confirma la contraseña: "):
         parser.error("Las contraseñas no coinciden")
 
+    # Guarda solo el resumen de la contraseña en PostgreSQL.
     password_hash = PASSWORD_HASH.hash(password)
     with psycopg.connect(database_url(), connect_timeout=5) as conn:
         init_db(conn)
         created = conn.execute(
             """INSERT INTO users (username, password_hash) VALUES (%s, %s)
-               ON CONFLICT (username) DO NOTHING""", (username, password_hash),
+               ON CONFLICT (username) DO NOTHING""",
+            (username, password_hash),
         ).rowcount
     if not created:
         parser.error("Ese usuario ya existe")

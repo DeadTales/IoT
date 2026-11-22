@@ -23,6 +23,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
+    # Prepara el consumidor antes de que el cliente empiece a recibir mensajes.
     bridge = CsvMqttBridge(client)
     bridge.start()
     client.connect(arguments.host, arguments.port, MQTT_KEEPALIVE_SECONDS)

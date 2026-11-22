@@ -1,6 +1,16 @@
+# El backend y el conversor independiente comparten el cliente MQTT.
+-r scripts/requirements.txt
+
+# API HTTP y servidor ASGI.
 fastapi>=0.121,<1
 uvicorn>=0.38,<1
+
+# Conexiones a PostgreSQL.
 psycopg[binary,pool]>=3.3,<4
+
+# Sesiones firmadas y contraseñas.
 PyJWT>=2.10,<3
 pwdlib[argon2]>=0.3,<1
+
+# Lectura del archivo de entorno.
 python-dotenv>=1.1,<2

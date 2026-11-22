@@ -1,6 +1,22 @@
+# Dependencias y compilaciones locales.
 node_modules/
 dist/
+
+# Configuración, documentación y respaldos locales.
 .env
 .env.local
 .vscode
 docs/
+.back/
+
+# Compilación y configuración del ESP32.
+/Monitor_Aire/ESP32/**/.pio
+/Monitor_Aire/ESP32/**/config.json
+/Monitor_Aire/ESP32/**/c_cucei.json
+/Monitor_Aire/ESP32/**/.code-workspace
+
+# Entornos virtuales y caché de Python.
+/Monitor_Aire/ESP32/**/.venv/
+/Monitor_Aire/ESP32/**/__pycache__/
+/Monitor_Aire/backend/**/.venv/
+/Monitor_Aire/backend/**/__pycache__/

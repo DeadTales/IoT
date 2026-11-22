@@ -1,8 +1,11 @@
+"""Carga de la configuración local del backend."""
+
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Permite iniciar la aplicación desde cualquier directorio.
 load_dotenv(Path(__file__).with_name(".env"))
 
 

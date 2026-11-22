@@ -1,3 +1,4 @@
+-- Migra la instalación anterior solo cuando conserva las tres tablas originales.
 DO $$
 BEGIN
     IF to_regclass('dashboard_users') IS NOT NULL
@@ -9,12 +10,15 @@ BEGIN
         ALTER TABLE dashboard_users RENAME TO users;
         ALTER TABLE dashboard_devices RENAME TO devices;
         ALTER TABLE devices RENAME COLUMN device_id TO id;
-        ALTER TABLE devices ADD COLUMN device_name text, ADD COLUMN device_desc text;
+        ALTER TABLE devices
+            ADD COLUMN device_name text,
+            ADD COLUMN device_desc text;
         ALTER TABLE dashboard_readings RENAME TO readings;
     END IF;
 END;
 $$;
 
+-- Cuentas del panel y datos descriptivos de los dispositivos.
 CREATE TABLE IF NOT EXISTS users (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username text NOT NULL UNIQUE,
@@ -27,12 +31,14 @@ CREATE TABLE IF NOT EXISTS devices (
     device_desc text
 );
 
+-- El identificador de registro permite descartar reenvíos del mismo dispositivo.
 CREATE TABLE IF NOT EXISTS readings (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     device_id text NOT NULL REFERENCES devices(id),
     record_id text,
     measured_at timestamptz,
     received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    -- El historial usa la hora de recepción si el sensor carecía de hora de medición.
     event_at timestamptz GENERATED ALWAYS AS (coalesce(measured_at, received_at)) STORED,
     temperature double precision,
     humidity double precision,
@@ -41,8 +47,10 @@ CREATE TABLE IF NOT EXISTS readings (
     UNIQUE (device_id, record_id)
 );
 
+-- El historial y las gráficas consultan columnas de tiempo distintas.
 CREATE INDEX IF NOT EXISTS dashboard_readings_device_event_idx
     ON readings (device_id, event_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS dashboard_readings_device_measured_idx
-    ON readings (device_id, measured_at) WHERE measured_at IS NOT NULL;
+    ON readings (device_id, measured_at)
+    WHERE measured_at IS NOT NULL;

@@ -1,1 +1,1 @@
-"""Conversion CSV y puente MQTT del monitor de aire."""
+"""Conversión CSV y puente MQTT independiente del monitor de aire."""

@@ -31,12 +31,15 @@ if TYPE_CHECKING:
     from psycopg_pool import ConnectionPool
 
 LOGGER = logging.getLogger(__name__)
+
+# Temas comunes para todos los dispositivos y límite del mensaje recibido.
 PROCESSED_TOPIC = "dispositivo/+/tratado"
 STATUS_TOPIC = "dispositivo/+/estado"
 MAX_PAYLOAD_BYTES = 4096
 
 
 def valid_id(value: object) -> bool:
+    """Comprueba que el identificador sea un segmento válido de un tema MQTT."""
     return (
         isinstance(value, str)
         and 0 < len(value) <= 128
@@ -46,9 +49,11 @@ def valid_id(value: object) -> bool:
 
 
 def parse_reading(device_id: str, document: dict) -> dict:
+    """Normaliza un mensaje tratado al formato que recibe PostgreSQL."""
     if not isinstance(document, dict) or document.get("device_id") != device_id:
         raise ValueError("El dispositivo del JSON no coincide con el tema MQTT")
 
+    # Una lectura sin hora de medición conserva ese campo como nulo.
     timestamp = document["timestamp"]
     measured_at = None
     if timestamp is not None:
@@ -87,6 +92,8 @@ def parse_reading(device_id: str, document: dict) -> dict:
 
 
 class MqttIngest:
+    """Coordina el cliente MQTT y el trabajador que guarda las lecturas."""
+
     def __init__(
         self,
         pool: ConnectionPool,
@@ -98,11 +105,14 @@ class MqttIngest:
         self.on_broker = on_broker
         self.on_status = on_status
         self.on_reading = on_reading
+
         self.host = os.getenv("MQTT_HOST", "127.0.0.1")
         self.port = int(os.getenv("MQTT_PORT", "1883"))
+
         self.messages: queue.Queue[tuple[str, str, bytes]] = queue.Queue(MESSAGE_QUEUE_SIZE)
         self.stopping = threading.Event()
         self.worker = threading.Thread(target=self.process_messages, name="mqtt-ingest")
+
         self.topics = [(PROCESSED_TOPIC, 1), (STATUS_TOPIC, 1)]
         if env_flag("MQTT_CONVERT_RAW", True):
             self.topics.append((RAW_TOPIC_FILTER, 1))
@@ -129,6 +139,7 @@ class MqttIngest:
         self.client.loop_stop()
         self.worker.join()
 
+    # Paho vuelve a ejecutar estos callbacks al restablecer la conexión.
     def on_connect(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
             LOGGER.warning("El broker MQTT rechazó la conexión: %s", reason_code)
@@ -152,21 +163,26 @@ class MqttIngest:
             LOGGER.warning("Se descartó un tema MQTT inválido")
             return
         _, device_id, kind = parts
+
+        # El estado del dispositivo puede entregarse sin consultar PostgreSQL.
         if kind == "estado":
             if message.payload in (b"conectado", b"desconectado"):
                 self.on_status(device_id, message.payload.decode("ascii"))
             return
+
         if kind not in ("tratado", "crudo"):
             return
         if len(message.payload) > MAX_PAYLOAD_BYTES:
             LOGGER.warning("Se descartó una lectura MQTT demasiado grande de %s", device_id)
             return
+
         try:
             self.messages.put_nowait((message.topic, device_id, message.payload))
         except queue.Full:
             LOGGER.warning("Cola MQTT llena, se descartó un mensaje de %s", device_id)
 
     def process_messages(self) -> None:
+        """Procesa la cola fuera del hilo que recibe mensajes del broker."""
         while not self.stopping.is_set():
             try:
                 topic, device_id, payload = self.messages.get(timeout=0.25)
@@ -178,11 +194,19 @@ class MqttIngest:
                     converted = convert_csv_message(topic, payload)
                     document = json.loads(converted.json_payload)
                     document["record_id"] = converted.record_id
+                    # El ACK permite borrar la fila del ESP32 después de guardarla.
                     self.save_reading(device_id, document)
                     self.confirm_replay(device_id, document)
                 else:
                     self.save_reading(device_id, json.loads(payload))
-            except (KeyError, TypeError, ValueError, OverflowError, RecursionError, csv.Error) as error:
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                RecursionError,
+                csv.Error,
+            ) as error:
                 LOGGER.warning("Se descartó una lectura MQTT inválida de %s: %s", device_id, error)
             except (psycopg.Error, RuntimeError):
                 LOGGER.exception("No se pudo procesar la lectura MQTT de %s", device_id)
@@ -190,16 +214,20 @@ class MqttIngest:
                 self.messages.task_done()
 
     def save_reading(self, device_id: str, document: dict) -> None:
+        # La deduplicación de PostgreSQL evita avisos por un reenvío.
         if insert_reading(self.pool, parse_reading(device_id, document)):
             self.on_reading()
 
     def confirm_replay(self, device_id: str, document: dict) -> None:
+        """Confirma el reenvío al ESP32 tras la publicación del JSON tratado."""
         if self.stopping.is_set() or not self.client.is_connected():
             return
 
         prefix = f"dispositivo/{device_id}"
         publication = self.client.publish(
-            f"{prefix}/tratado", json.dumps(document, ensure_ascii=False, allow_nan=False), qos=1,
+            f"{prefix}/tratado",
+            json.dumps(document, ensure_ascii=False, allow_nan=False),
+            qos=1,
         )
         if publication.rc == mqtt.MQTT_ERR_SUCCESS:
             publication.wait_for_publish(timeout=PUBLISH_TIMEOUT_SECONDS)

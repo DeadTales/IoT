@@ -1,11 +1,14 @@
 BasedOnStyle: LLVM
 IndentWidth: 4
+UseTab: Never
 ColumnLimit: 100
 BreakBeforeBraces: Attach
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
 InsertBraces: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
 PointerAlignment: Right
 ReferenceAlignment: Right
 SortIncludes: CaseSensitive

@@ -1,17 +1,20 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 
+// Secuencia de colores y tiempo de permanencia en pantalla.
 constexpr unsigned long COLOR_INTERVAL_MS = 2000;
 constexpr uint16_t TEST_COLORS[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE};
 constexpr const char *COLOR_NAMES[] = {"ROJO", "VERDE", "AZUL", "BLANCO"};
 constexpr size_t COLOR_COUNT = sizeof(TEST_COLORS) / sizeof(TEST_COLORS[0]);
 
+// Estado de la prueba de pantalla.
 TFT_eSPI display;
 unsigned long lastColorAt = 0;
 size_t colorIndex = 0;
 
 void showTestColor(size_t index);
 
+// Configuración de la TFT y del diagnóstico por el puerto serie.
 void setup() {
     Serial.begin(115200);
     Serial.println("PRUEBA TFT: sin WiFi, MQTT, sensores ni acceso a archivos");
@@ -32,6 +35,7 @@ void setup() {
     lastColorAt = millis();
 }
 
+// Alterna colores de forma periódica para comprobar la salida de la TFT.
 void loop() {
     if (millis() - lastColorAt >= COLOR_INTERVAL_MS) {
         lastColorAt = millis();

@@ -1,1 +1,2 @@
+# Cliente MQTT del conversor.
 paho-mqtt>=2.1,<3

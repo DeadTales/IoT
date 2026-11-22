@@ -6,7 +6,12 @@
   import { formatDate, formatValue, metrics, periods } from '../../models/telemetry';
   import HistoryTable from './HistoryTable.svelte';
 
+  const RECONNECT_INTERVAL_MS = 3000;
+  const SERIES_REFRESH_INTERVAL_MS = 30_000;
+
   let { user, onlogout, onexpire, loggingOut } = $props();
+
+  // Estado de navegación, dispositivos y conexión en vivo.
   let view = $state('overview');
   let devices = $state([]);
   let selectedId = $state('');
@@ -14,6 +19,7 @@
   let streamStatus = $state('connecting');
   let actionError = $state('');
 
+  // Selección y resultado de la consulta histórica graficada.
   let metricKey = $state('temperature');
   let periodKey = $state('day');
   let series = $state(null);
@@ -25,22 +31,36 @@
   const latest = $derived(device?.latest);
   const metric = $derived(metrics.find(({ key }) => key === metricKey));
   const period = $derived(periods.find(({ key }) => key === periodKey));
-  const chartHasValues = $derived(series?.points.some(point => point[metricKey] != null));
-  const aggregation = $derived(series && (periodKey === 'month'
-    ? 'Promedio diario'
-    : series.step_seconds >= 3600
-      ? `Promedio cada ${series.step_seconds / 3600} h`
-      : `Promedio cada ${series.step_seconds / 60} min`));
+  const chartHasValues = $derived(series?.points.some((point) => point[metricKey] != null));
+  const aggregation = $derived(
+    series &&
+      (periodKey === 'month'
+        ? 'Promedio diario'
+        : series.step_seconds >= 3600
+          ? `Promedio cada ${series.step_seconds / 3600} h`
+          : `Promedio cada ${series.step_seconds / 60} min`),
+  );
   const lastEvent = $derived(latest?.measured_at ?? latest?.received_at);
   const brokerOnline = $derived(streamStatus === 'open' && brokerConnected);
   const deviceOnline = $derived(brokerOnline && device?.status === 'conectado');
-  const brokerText = $derived(streamStatus === 'open'
-    ? (brokerConnected ? 'MQTT conectado' : 'MQTT desconectado')
-    : (streamStatus === 'connecting' ? 'Conectando al panel' : 'Reconectando al panel'));
-  const deviceText = $derived(deviceOnline
-    ? 'En línea'
-    : (brokerOnline && device?.status === 'desconectado' ? 'Fuera de línea' : 'Sin estado'));
+  const brokerText = $derived(
+    streamStatus === 'open'
+      ? brokerConnected
+        ? 'MQTT conectado'
+        : 'MQTT desconectado'
+      : streamStatus === 'connecting'
+        ? 'Conectando al panel'
+        : 'Reconectando al panel',
+  );
+  const deviceText = $derived(
+    deviceOnline
+      ? 'En línea'
+      : brokerOnline && device?.status === 'desconectado'
+        ? 'Fuera de línea'
+        : 'Sin estado',
+  );
 
+  // SSE transporta las lecturas y los cambios de estado del broker.
   $effect(() => {
     let stream;
     let retry;
@@ -49,7 +69,7 @@
 
     function connect() {
       stream = new EventSource('/api/live');
-      stream.onopen = () => streamStatus = 'open';
+      stream.onopen = () => (streamStatus = 'open');
       stream.addEventListener('snapshot', ({ data }) => {
         const snapshot = JSON.parse(data);
         devices = snapshot.devices;
@@ -72,7 +92,8 @@
         } finally {
           checking = false;
         }
-        if (active && stream.readyState === EventSource.CLOSED) retry = setTimeout(connect, 3000);
+        if (active && stream.readyState === EventSource.CLOSED)
+          retry = setTimeout(connect, RECONNECT_INTERVAL_MS);
       };
     }
 
@@ -84,6 +105,7 @@
     };
   });
 
+  // Cancela la consulta del dispositivo y periodo al cambiar de vista.
   $effect(() => {
     const id = selectedId;
     const key = periodKey;
@@ -113,7 +135,7 @@
       }
     };
     void update();
-    const interval = setInterval(update, 30_000);
+    const interval = setInterval(update, SERIES_REFRESH_INTERVAL_MS);
     return () => {
       clearInterval(interval);
       controller.abort();
@@ -137,16 +159,38 @@
 </script>
 
 <div class="dashboard-layout">
+  <!-- Navegación principal y cierre de sesión. -->
   <header class="topbar">
     <div class="topbar-inner">
       <Brand />
       <nav class="main-nav" aria-label="Navegación principal">
-        <button type="button" class:active={view === 'overview'} aria-current={view === 'overview' ? 'page' : undefined} onclick={() => selectView('overview')}>En vivo</button>
-        <button type="button" class:active={view === 'history'} aria-current={view === 'history' ? 'page' : undefined} onclick={() => selectView('history')}>Historial</button>
+        <button
+          type="button"
+          class:active={view === 'overview'}
+          aria-current={view === 'overview' ? 'page' : undefined}
+          onclick={() => selectView('overview')}
+        >
+          En vivo
+        </button>
+        <button
+          type="button"
+          class:active={view === 'history'}
+          aria-current={view === 'history' ? 'page' : undefined}
+          onclick={() => selectView('history')}
+        >
+          Historial
+        </button>
       </nav>
       <div class="account">
         <span title={user.username}>{user.username}</span>
-        <button class="icon-button" type="button" title="Cerrar sesión" aria-label="Cerrar sesión" onclick={endSession} disabled={loggingOut}>
+        <button
+          class="icon-button"
+          type="button"
+          title="Cerrar sesión"
+          aria-label="Cerrar sesión"
+          onclick={endSession}
+          disabled={loggingOut}
+        >
           <LogOut size={17} />
         </button>
       </div>
@@ -157,7 +201,8 @@
     <header class="page-header">
       <div>
         <div class="broker-status" aria-live="polite">
-          <span class="status-dot" class:online={brokerOnline} aria-hidden="true"></span> {brokerText}
+          <span class="status-dot" class:online={brokerOnline} aria-hidden="true"></span>
+          {brokerText}
         </div>
         <h1>{view === 'overview' ? 'Estación ambiental' : 'Historial de lecturas'}</h1>
       </div>
@@ -169,14 +214,17 @@
             {#if !devices.length}
               <option value="">Sin dispositivos</option>
             {:else}
-              {#each devices as item (item.device_id)}<option value={item.device_id}>{item.device_id}</option>{/each}
+              {#each devices as item (item.device_id)}<option value={item.device_id}>
+                  {item.device_id}
+                </option>{/each}
             {/if}
           </select>
           <ChevronDown size={16} class="select-chevron" />
         </div>
         {#if device}
           <div class="device-status">
-            <span class="status-dot" class:online={deviceOnline} aria-hidden="true"></span> {deviceText}
+            <span class="status-dot" class:online={deviceOnline} aria-hidden="true"></span>
+            {deviceText}
           </div>
         {/if}
       </div>
@@ -184,12 +232,18 @@
     {#if actionError}<p class="form-error" role="alert">{actionError}</p>{/if}
 
     {#if view === 'overview'}
+      <!-- Las lecturas actuales también seleccionan la variable de la gráfica. -->
       <div class="instrument" style:--trace={metric.color}>
         <section class="channels" aria-labelledby="live-label">
           <div class="channels-header">
             <h2 id="live-label">Lecturas actuales</h2>
             {#if lastEvent}
-              <p>{latest.measured_at ? 'Última medición' : 'Última recepción'} <time datetime={lastEvent} title={formatDate(lastEvent)}>{formatDate(lastEvent, 'time')}</time></p>
+              <p>
+                {latest.measured_at ? 'Última medición' : 'Última recepción'}
+                <time datetime={lastEvent} title={formatDate(lastEvent)}>
+                  {formatDate(lastEvent, 'time')}
+                </time>
+              </p>
             {:else}
               <p>{device ? 'Esperando una medición' : 'Esperando un dispositivo'}</p>
             {/if}
@@ -203,7 +257,7 @@
                 style:--channel={item.color}
                 aria-pressed={metricKey === item.key}
                 aria-controls="trend"
-                onclick={() => metricKey = item.key}
+                onclick={() => (metricKey = item.key)}
               >
                 <span class="channel-heading">
                   <span>{item.label}</span>
@@ -213,7 +267,9 @@
                   {formatValue(latest?.[item.key], item)} <span>{item.unit}</span>
                 </span>
                 {#if item.key === 'gas' && latest?.gas != null}
-                  <span class="channel-note">{latest.calibrated ? 'Lectura calibrada' : 'Concentración estimada'}</span>
+                  <span class="channel-note">
+                    {latest.calibrated ? 'Lectura calibrada' : 'Concentración estimada'}
+                  </span>
                 {/if}
               </button>
             {/each}
@@ -228,13 +284,28 @@
             </div>
             <div class="period-control" role="group" aria-label="Periodo de la gráfica">
               {#each periods as item (item.key)}
-                <button type="button" class:active={periodKey === item.key} aria-pressed={periodKey === item.key} onclick={() => periodKey = item.key}>{item.label}</button>
+                <button
+                  type="button"
+                  class:active={periodKey === item.key}
+                  aria-pressed={periodKey === item.key}
+                  onclick={() => (periodKey = item.key)}
+                >
+                  {item.label}
+                </button>
               {/each}
             </div>
           </div>
 
           {#if seriesError && selectedId}
-            <div class="chart-empty" role="status"><strong>{seriesError}</strong><button type="button" class="button button-secondary" onclick={() => seriesRevision += 1}><RefreshCw size={16} /> Reintentar</button></div>
+            <div class="chart-empty" role="status">
+              <strong>{seriesError}</strong><button
+                type="button"
+                class="button button-secondary"
+                onclick={() => (seriesRevision += 1)}
+              >
+                <RefreshCw size={16} /> Reintentar
+              </button>
+            </div>
           {:else if selectedId && seriesLoading}
             <div class="chart-empty" role="status"><strong>Cargando mediciones…</strong></div>
           {:else if selectedId && chartHasValues}
@@ -242,7 +313,11 @@
           {:else}
             <div class="chart-empty">
               <strong>{selectedId ? 'Sin lecturas en este periodo' : 'Aún no hay lecturas'}</strong>
-              <p>{selectedId ? 'Elige otro periodo o selecciona otra medición.' : 'La gráfica se habilita cuando un dispositivo envía mediciones.'}</p>
+              <p>
+                {selectedId
+                  ? 'Elige otro periodo o selecciona otra medición.'
+                  : 'La gráfica se habilita cuando un dispositivo envía mediciones.'}
+              </p>
             </div>
           {/if}
           <p class="trend-footer">Hora de Ciudad de México</p>

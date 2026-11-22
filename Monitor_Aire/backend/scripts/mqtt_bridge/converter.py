@@ -1,4 +1,4 @@
-"""Validacion y conversion CSV a JSON, sin conexiones de red."""
+"""Validación y conversión CSV a JSON en memoria."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .settings import CSV_COLUMNS, MEASUREMENT_FIELDS
 
 
 def parse_measurement(value: str) -> float | None:
-    """Representa campos vacios como null y rechaza numeros no finitos."""
+    """Representa campos vacíos como null y rechaza números no finitos."""
     if not value:
         return None
 
@@ -34,6 +34,7 @@ def convert_csv_message(topic: str, payload: bytes) -> ConvertedReading:
     ):
         raise ValueError("Topic no valido")
 
+    # El firmware envía una cabecera y una fila completa en cada mensaje.
     reader = csv.DictReader(io.StringIO(payload.decode("utf-8")), strict=True)
     if reader.fieldnames != list(CSV_COLUMNS):
         raise ValueError("Cabecera CSV no valida")
@@ -52,6 +53,7 @@ def convert_csv_message(topic: str, payload: bytes) -> ConvertedReading:
     if row["calibrate"] not in ("true", "false"):
         raise ValueError("calibrate invalido")
 
+    # La tabla de metadatos mantiene los sensores y las unidades del contrato JSON.
     measurements = {
         name: {
             "sensor": sensor,

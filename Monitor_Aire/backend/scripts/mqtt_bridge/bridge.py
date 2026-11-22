@@ -1,4 +1,4 @@
-"""Recepcion MQTT, procesamiento en segundo plano y confirmaciones."""
+"""Recepción MQTT, procesamiento en segundo plano y confirmaciones."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class CsvMqttBridge:
         self.client.on_message = self.on_message
 
     def on_connect(self, client, userdata, flags, reason_code, properties) -> None:
-        """Restablece la suscripcion al conectar o reconectar al broker."""
+        """Restablece la suscripción al conectar o reconectar al broker."""
         if reason_code != 0:
             LOGGER.error("Conexion rechazada: %s", reason_code)
             return
@@ -46,7 +46,7 @@ class CsvMqttBridge:
             LOGGER.warning("Cola llena; el ESP32 reintentara sin recibir ACK")
 
     def publish_reading(self, reading: ConvertedReading) -> None:
-        """Confirma al ESP32 solo despues del PUBACK del JSON tratado."""
+        """Confirma al ESP32 solo después del PUBACK del JSON tratado."""
         topic_prefix = f"dispositivo/{reading.device_id}"
         publication = self.client.publish(
             f"{topic_prefix}/tratado", reading.json_payload, qos=1
@@ -72,6 +72,7 @@ class CsvMqttBridge:
                 self.messages.task_done()
 
     def start(self) -> None:
+        # El trabajador acompaña el ciclo MQTT del proceso principal.
         worker = threading.Thread(
             target=self.process_messages,
             name="csv-message-worker",
