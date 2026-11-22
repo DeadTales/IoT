@@ -4,10 +4,11 @@
   import { formatDate, formatValue, integerFormat, metrics } from '../../models/telemetry';
 
   const PER_PAGE = 20;
+  const EMPTY_FILTERS = { start: '', end: '', start_time: '', end_time: '' };
   let { deviceId, onexpire } = $props();
-  // Separa las fechas editadas de los filtros que ya se aplicaron.
-  let draft = $state({ start: '', end: '' });
-  let filters = $state({ start: '', end: '' });
+  // Separa los filtros editados de los que ya se aplicaron.
+  let draft = $state({ ...EMPTY_FILTERS });
+  let filters = $state({ ...EMPTY_FILTERS });
   let pagination = $state({ device: '', page: 1 });
   let revision = $state(0);
 
@@ -17,7 +18,13 @@
   const maxPage = $derived(Math.max(1, Math.ceil((response?.total ?? 0) / PER_PAGE)));
   const csvUrl = $derived(`/api/history.csv?${historyQuery(deviceId, filters)}`);
   const datesInvalid = $derived(Boolean(draft.start && draft.end && draft.start > draft.end));
-  const filtersChanged = $derived(draft.start !== filters.start || draft.end !== filters.end);
+  const filtersChanged = $derived(
+    Object.keys(EMPTY_FILTERS).some((key) => draft[key] !== filters[key]),
+  );
+  const hasAppliedFilters = $derived(Object.values(filters).some(Boolean));
+  const crossesMidnight = $derived(
+    draft.start_time && draft.end_time && draft.start_time > draft.end_time,
+  );
 
   // Renueva la página al cambiar el dispositivo o los filtros.
   $effect(() => {
@@ -61,8 +68,8 @@
   }
 
   function clearFilters() {
-    draft = { start: '', end: '' };
-    filters = { ...draft };
+    draft = { ...EMPTY_FILTERS };
+    filters = { ...EMPTY_FILTERS };
     goToPage(1);
   }
 </script>
@@ -81,21 +88,39 @@
     {/if}
   </div>
 
-  <!-- Filtros de fecha compartidos con la exportación. -->
+  <!-- Filtros de fecha y hora compartidos con la exportación. -->
   <form class="history-filters" onsubmit={applyFilters}>
-    <div>
-      <label for="filter-start">Desde</label><input
-        id="filter-start"
-        type="date"
-        bind:value={draft.start}
-      />
+    <div class="history-filter-pair">
+      <div class="history-filter-field">
+        <label for="filter-start">Fecha inicial</label>
+        <input id="filter-start" type="date" bind:value={draft.start} />
+      </div>
+      <div class="history-filter-field">
+        <label for="filter-end">Fecha final</label>
+        <input id="filter-end" type="date" bind:value={draft.end} />
+      </div>
     </div>
-    <div>
-      <label for="filter-end">Hasta</label><input
-        id="filter-end"
-        type="date"
-        bind:value={draft.end}
-      />
+    <div class="history-filter-pair">
+      <div class="history-filter-field">
+        <label for="filter-start-time">Hora inicial</label>
+        <input
+          id="filter-start-time"
+          type="time"
+          step="60"
+          bind:value={draft.start_time}
+          aria-describedby="history-hours-note"
+        />
+      </div>
+      <div class="history-filter-field">
+        <label for="filter-end-time">Hora final</label>
+        <input
+          id="filter-end-time"
+          type="time"
+          step="60"
+          bind:value={draft.end_time}
+          aria-describedby="history-hours-note"
+        />
+      </div>
     </div>
     <button
       class="button button-secondary"
@@ -104,9 +129,14 @@
     >
       Aplicar filtros
     </button>
-    {#if draft.start || draft.end || filters.start || filters.end}
+    {#if filtersChanged || hasAppliedFilters}
       <button class="button button-text" type="button" onclick={clearFilters}>Limpiar</button>
     {/if}
+    <p class="history-filter-note" id="history-hours-note">
+      Las horas se aplican a cada día del periodo.{#if crossesMidnight}
+        El rango cruza la medianoche.
+      {/if}
+    </p>
     {#if datesInvalid}<p class="form-error" role="alert">
         La fecha final debe ser igual o posterior a la fecha inicial.
       </p>{/if}
@@ -128,8 +158,8 @@
     <div class="table-empty">
       <strong>No hay registros disponibles</strong>
       <p>
-        {deviceId && (filters.start || filters.end)
-          ? 'Prueba con otro intervalo de fechas.'
+        {deviceId && hasAppliedFilters
+          ? 'Prueba con otro rango de fechas u horas.'
           : 'Aquí aparecerán las lecturas con hora de medición.'}
       </p>
     </div>

@@ -27,6 +27,7 @@ PERIODS = {
 }
 DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 DeviceId = Annotated[str, Query(min_length=1, max_length=128)]
+HistoryTime = Annotated[str | None, Query(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 
 
 class LiveState:
@@ -159,14 +160,19 @@ def history_filters(
     device_id: DeviceId,
     start: date | None = None,
     end: date | None = None,
+    start_time: HistoryTime = None,
+    end_time: HistoryTime = None,
 ) -> dict:
-    """Incluye todo el día final usando la medianoche siguiente como límite exclusivo."""
+    """Convierte las fechas de calendario y las horas locales a parámetros SQL."""
     if (start and end and start > end) or end == date.max:
         raise HTTPException(status_code=422, detail="El rango de fechas es inválido")
     return {
         "device": device_id,
         "start": datetime.combine(start, time.min, LOCAL_TIME) if start else None,
         "end": datetime.combine(end + timedelta(days=1), time.min, LOCAL_TIME) if end else None,
+        "start_time": time.fromisoformat(start_time) if start_time else None,
+        "end_time": time.fromisoformat(end_time) if end_time else None,
+        "zone": LOCAL_TIME_ZONE,
     }
 
 

@@ -12,13 +12,20 @@ from .config import LOCAL_TIME_ZONE, database_url
 SCHEMA = Path(__file__).with_name("schema.sql")
 READING_FIELDS = "id, measured_at, received_at, temperature, humidity, gas, calibrated"
 
-# La tabla y el CSV comparten el filtro por fecha de medición y el orden.
-HISTORY_FILTER = """
+# El filtro de horas usa minutos completos en la zona del panel.
+HISTORY_MINUTE = "date_trunc('minute', measured_at AT TIME ZONE %(zone)s::text)::time"
+HISTORY_FILTER = f"""
     FROM readings
     WHERE device_id = %(device)s
       AND measured_at IS NOT NULL
       AND (%(start)s::timestamptz IS NULL OR measured_at >= %(start)s)
       AND (%(end)s::timestamptz IS NULL OR measured_at < %(end)s)
+      AND CASE
+          WHEN %(start_time)s::time > %(end_time)s::time
+              THEN {HISTORY_MINUTE} >= %(start_time)s OR {HISTORY_MINUTE} <= %(end_time)s
+          ELSE (%(start_time)s::time IS NULL OR {HISTORY_MINUTE} >= %(start_time)s)
+              AND (%(end_time)s::time IS NULL OR {HISTORY_MINUTE} <= %(end_time)s)
+      END
 """
 HISTORY_ORDER = " ORDER BY measured_at DESC, received_at DESC, id DESC"
 

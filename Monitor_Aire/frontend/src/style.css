@@ -597,9 +597,16 @@ a {
   border-top: 1px solid var(--line);
 }
 
-.history-filters > div {
+.history-filter-pair {
   display: grid;
-  flex: 0 1 164px;
+  flex: 0 1 338px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.history-filter-field {
+  display: grid;
   gap: 5px;
   min-width: 0;
 }
@@ -616,8 +623,14 @@ a {
   font: 400 0.875rem var(--mono);
 }
 
-.history-filters .form-error {
+.history-filters .form-error,
+.history-filter-note {
   flex: 1 0 100%;
+}
+
+.history-filter-note {
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .table-scroll {
@@ -836,7 +849,7 @@ a {
     gap: 10px;
   }
 
-  .history-filters > div {
-    flex: 1 1 115px;
+  .history-filter-pair {
+    flex: 1 1 100%;
   }
 }

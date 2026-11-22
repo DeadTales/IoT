@@ -21,10 +21,11 @@ export function postJson(path, payload) {
   });
 }
 
-// El listado y la descarga CSV comparten los filtros de fecha.
+// El listado y la descarga CSV comparten los filtros de fecha y hora.
 export function historyQuery(device, filters) {
   const query = new URLSearchParams({ device_id: device });
-  if (filters.start) query.set('start', filters.start);
-  if (filters.end) query.set('end', filters.end);
+  for (const key of ['start', 'end', 'start_time', 'end_time']) {
+    if (filters[key]) query.set(key, filters[key]);
+  }
   return query;
 }
