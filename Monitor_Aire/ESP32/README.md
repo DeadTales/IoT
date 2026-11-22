@@ -1,7 +1,5 @@
 # Monitor de aire ESP32-S3
 
-Consulta la [documentación por servicio](../docs/README.md) y el [recorrido del firmware](../docs/esp32/README.md).
-
 Cada 2 segundos publica el JSON en `dispositivo/ESP32_S3_0001/tratado`.
 Si MQTT esta desconectado o falla publish, agrega las lecturas a un unico archivo
 en LittleFS (`/pending.csv`). Con [el reenvío HTTP activado](#reenviar-el-historial-por-http),
